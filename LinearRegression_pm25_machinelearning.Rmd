@@ -1,0 +1,487 @@
+---
+author: "Li Du"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#Predicting PM2.5 Concentration in NYC from Measured Components
+
+
+# Background
+PM~2.5~ refers to airborne particles with diameters less than 2.5 micrometers. These particles are small enough to be able to penetrate into human circulation systems and therefore could result in even more serious impacts to the human health compared to larger particles such as PM10. Many epidemiological studies have revealed that elevated PM~2.5~ concentrations were associated to a number of adverse health effects such as cardiovascular and respiratory diseases as well as lung cancer. Currently, PM~2.5~ is one of the major air pollutants in many countries/regions. It has been a particularly serious problem in urban areas. In addition, PM~2.5~ also lead to a series of environmental effects including visibility impairment, environmental damage and material damage.
+
+PM~2.5~ is in fact a very complex mixture of a number of chemical species, water droplets and even microbes attached to them. The compositions (i.e. the proportion of these components) of PM~2.5~ is closely related to its physical-chemical properties and toxicity. Therefore, it has been one of the major focuses of many researchers and scientists for better understanding their effects on human health. In the meantime, the composition is also the fingerprint of pollution sources and scientists have been using them to trace and quantify these major emission sources.
+
+The United States Environmental Protection Agency (EPA) has established multiple nationwide monitoring networks^[1]^ to measure PM~2.5~ concentration as well as its components to support air quality management, air quality research and studies on public health in the United States. However, due to the consideration of cost and limitation of analytical techniques, EPA only routinely measures a subset of the major components which are organic carbon (OC), elemental carbon (EC), inorganic ions (sulfate, nitrate, and ammonium), and major elements (mineral elements, salt, and others). Since oxygen (O) and hydrogen (H) are not directly measured in these networks, researchers have been exploring various equations to account for their presence, thereby approximating gravimetric mass of PM~2.5~.  These equations predominantly took the form of linear equations with the components as independent variables and PM~2.5~ concentration as dependent variables^[2]^. In air quality research, researchers usually adopt an approach that infer linear coefficients based on both the possible chemical forms of these components (e.g. iron could be present in the nature as Fe~3~O~4~) and the measured data (e.g. regression).
+
+The objective of this project is to utilize the measurements (both PM~2.5~ and its components) collected from the US nationwide Chemical Speciation Network (CSN) and explore potential regression models to predict PM~2.5~ concentration based on the composition of PM~2.5~. This project also aims to evaluate the possibility of utilizing purely mathematical approaches to reconstruct/predict PM~2.5~ concentrations using all or a subset of the component concentration.
+
+
+
+# Data collection and cleaning
+```{r cleaning, eval=FALSE, include=FALSE}
+#This section is only for demonstration purpose because the raw data files are large in size.  Note that #eval=FALSE for this section so that the code in this section will not run.   Processed data files that are ready for the regression analysis are saved as csv files by these codes.
+
+#The "Cleaning" function is defined to clean and extract information and data from the raw data file
+
+#dataset1 should be data file that contains concentration data for the PM2.5 components
+#dataset2 should be data files taht contains data for PM2.5 concentration
+#year should be the actual year of the concentration data
+#day1 represents the first sampling day of the year of interest
+Cleaning <- function (dataset1, dataset2, year, day1) {
+  rawdata <- read.csv(dataset1)
+  ParameterList <- read.csv("Parameter.csv")
+  
+  #filter out the air quality data measured in New York City
+  #POC identifies the sampler. In this case, all the chemical components are measured by POC = 5
+  AQ_NYC <- subset(rawdata, State.Code == 36 & County.Code == 61 & Site.Num == 134 & POC == 5)
+  
+  #keep only the columns that will be used in the analysis
+  keeps <- c("Date.Local", "Parameter.Code", "Parameter.Name", "Units.of.Measure","Arithmetic.Mean")
+  AQ_NYC <- AQ_NYC[keeps]
+  
+  ####status checkpoint####
+  print ("AQ_NYC created")
+
+  #create a date column that list all the scheduled sampling days in the selected year
+  Date_local <- as.Date(day1)
+  next_day <- Date_local+3#the measurement of PM2.5 and its components is once every three days
+  lastday <- as.Date(paste(year,"-12-31",sep=""))
+  while (next_day <= lastday) {
+    Date_local <- c(Date_local, next_day)
+    next_day <- next_day +3 #the measurement of PM2.5 and its components is once every three days 
+  }
+  
+  ####pollutants that are not relevant to this analysis
+  rem<- c(68103,68104,68105,68106,68107,68108,88169,88180,88184,88307,88357,88321,88383,88329,88384,88330,88385,88331,88305,
+          88355,88320,88383,88374,88324,88333,88325,88324,88336,88335,88377,88327,88304,88375, 88376,88378,88336,88388,88328,88316)
+  full_list <- unique(AQ_NYC$Parameter.Code)
+  keep_list <- full_list[! full_list %in% rem]#list of pollutants to be analyzed
+  
+  Date_local = data.frame(Date_local)
+  Date_local$Date_local <- as.factor(Date_local$Date_local)
+  colnames (Date_local) <- "Date.Local"
+  
+  ####status checkpoint####
+  print ("Date_local created")
+  
+  reformat <- function (dataset, datecol){
+    col <- NULL
+    for (i in keep_list) {
+      buffer <- subset(dataset, Parameter.Code == i)[c("Date.Local","Arithmetic.Mean")]
+      datecol <- merge(datecol,buffer, by="Date.Local", all.x=TRUE)
+      
+      #collect the names of the components
+      col <- c(col, as.character(ParameterList[which(ParameterList$Parameter.Code == i), 1]))
+    }
+    
+    df <- datecol
+    colnames(df) <- c("Date", col)#change the names of the columns
+    return (df)
+  }
+  
+  comp_NYC <- reformat (AQ_NYC, Date_local)
+
+  ####status checkpoint####
+  print ("comp_NYC created")
+  
+  #PM2.5 concentration data#######
+  rawdata_PM <- read.csv(dataset2)
+  PM_NYC <- subset(rawdata_PM, State.Code == 36 & County.Code == 61 & Site.Num == 134)
+  PM_NYC <- PM_NYC[c("Date.Local","Arithmetic.Mean")]
+  PM_NYC <- merge(Date_local,PM_NYC, by="Date.Local",all.x = TRUE)
+  colnames(PM_NYC) <- c("Date","PM2.5")
+  
+  ####status checkpoint####
+  print ("PM_NYC created")
+  
+  AQ_NYC <- merge(comp_NYC, PM_NYC, by="Date", all.x=TRUE)
+  
+  #make sure the column names are short and understandable
+  colnames(AQ_NYC)[32:37] <- c("Ammonium","Sodium","Potassium","Nitrate","OC","EC")
+  
+  #keep only the days with complete set of results (data available for all components)
+  AQ_NYC <- AQ_NYC[complete.cases(AQ_NYC),]
+  
+  #export the training dataset to a CSV file
+  write.csv(AQ_NYC, paste("AQ_NYC",year,".csv",sep=""))
+}
+
+###########################################################################################
+#setwd("F:/GWU_DS/DS6101/Project2")
+ParameterList <- read.csv("Parameter.csv")
+
+#The first sampling day (day1 in the Cleaning function) in:
+#2011: 2011-01-03
+#2012: 2012-01-01
+#2013: 2013-01-04
+#2014: 2014-01-05
+
+Cleaning ("daily_SPEC_2011.csv", "daily_88101_2011.csv", 2011, "2011-01-03")
+Cleaning ("daily_SPEC_2012.csv", "daily_88101_2012.csv", 2012, "2012-01-01")
+Cleaning ("daily_SPEC_2013.csv", "daily_88101_2013.csv", 2013, "2013-01-04")
+Cleaning ("daily_SPEC_2014.csv", "daily_88101_2014.csv", 2014, "2014-01-05")
+
+trainingset1 <- read.csv("AQ_NYC2011.csv")
+trainingset2 <- read.csv("AQ_NYC2012.csv")
+testingset1 <- read.csv("AQ_NYC2013.csv")
+testingset2 <- read.csv("AQ_NYC2014.csv")
+
+trainingset <- rbind(trainingset1, trainingset2)
+testingset <- rbind(testingset1, testingset2)
+trainingset <- trainingset[,-1]
+testingset <- testingset[,-1]
+
+write.csv(trainingset, "trainingset.csv")
+write.csv(testingset, "testingset.csv")
+```
+
+The raw data files were retrieved from US EPA air quality monitoring data repository^[3]^. The 24-hour aggregated PM~2.5~ and component concentration were collected as part of the US Chemical Speciation Network (CSN). The CSN network is comprised of over 100 monitoring stations across the US. Each air monitoring station measures water-soluble ions, nitrate, sulfate, organic carbon (OC), elemental carbon (EC), elements in the PM~2.5~ and meteorological conditions (temperature, wind direction, wind speed, relative humidity, etc.). Sampling occurs every 1 in 3 or every 1 in 6 days. For this project, we selected data collected from a monitoring station located in the New York City during 2011 and 2014.
+
+Data collection and cleaning procedure includes:  
+.	retrieve the raw data files for PM2.5 and its components for year 2011 to 2014  
+.	identify the station and sampler codes to extract the data for New York City from these raw data files  
+.	keep only a subset of the variables that are relevant to this analysis                            
+.	examine the missing values and keep only days that have data for all the variables  
+.	export the formatted and cleaned dataset to a new set of csv files. Data for 2011 and 2012 (trainingset.csv) were used to train the model and data for 2013 and 2014 (testingset.csv) were used to test the regression models.
+
+The cleaning and formatting process dramatically reduced the size of the testing and training datasets. For example, the original raw datasets are as large as over 700MB and contain as many as over 2 million rows. The compiled and cleaned datasets for analysis are typically around 30 KB and contain only about 160 rows.
+
+# Analysis
+
+```{r set_up, include=F}
+# define a function to load or install packages
+loadPkg = function(x) { if (!require(x,character.only=T, quietly =T)) { install.packages(x,dep=T,repos="http://cran.us.r-project.org"); if(!require(x,character.only=T)) stop("Package not found") } }
+
+#import the training and testing datasets and get them ready for the regression analysis
+training <- read.csv("trainingset.csv")
+testing <- read.csv("testingset.csv")
+
+#the first column is just an index column that is not useful for the analysis
+training <- training[-1]
+testing <- testing[,-1]
+
+#traning.clean and testing.clean are datasets without the "Date" column
+training.clean <- training[,-1]
+testing.clean <- testing[,-1]
+
+#training.predictor and testing.preditor are datasts containing only the predictors(i.e. excluding PM2.5)
+drops <- c("X","Date","PM2.5")
+training.predictor <- training[,!names(training) %in% drops]
+testing.predictor <- testing[,!names(testing) %in% drops]
+```
+
+```{r libraries, include=FALSE}
+loadPkg("dplyr")
+loadPkg("GGally")
+loadPkg("reshape2")
+loadPkg("ggplot2")
+loadPkg("scales")
+loadPkg("pastecs")
+loadPkg("leaps")
+loadPkg("ISLR")
+loadPkg("pander")
+loadPkg("corrplot")
+loadPkg("glmnet")
+loadPkg('fmsb')
+```
+
+
+## Exploratory data analysis
+
+Before we evaluate the multiple regression models, the exploratory analysis was performed for the training dataset to understand the characteristics of these variables.
+
+```{r str, echo=FALSE}
+#View(training)
+#View(testing)
+str(training.clean)
+```
+
+```{r summary, echo=FALSE, warning=FALSE}
+print("Summary Statistics of the training dataset")
+summary(training.clean)
+print("Summary of standard deviations of each variable")
+dplyr::summarise_all(training.clean, funs(sd))
+```
+
+We would also like to visualize the relative contribution of each component to the total PM2.5 concentration by the following bar chart. There are 38 components measured and reported by the EPA in this dataset. From the bar chart, we see that organic carbon, sulfate, nitrate, elemental carbon and ammonium account for about 75% of total PM~2.5~. Other species only account for about one quarter with many elements contributing to negligible amount of PM~2.5~ mass.
+
+```{r barchart, echo=FALSE}
+#we would like to compare the proportions of these species in the total PM2.5 concentration
+spec <- colnames(training.clean)
+spec.means <- colMeans(training.clean)
+spec.means <- data.frame(spec,spec.means)
+rownames(spec.means) <- NULL
+ggplot(spec.means,aes(x=reorder(spec,-spec.means),y=spec.means))+geom_bar(stat = 'identity')+theme(axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))+labs(x="Species", y="microgram/m3")+ggtitle("Mean concentration during 2011 to 2012")+theme(plot.title = element_text(hjust = 0.5))
+```
+
+The time series of PM~2.5~ and its selected key components show seasonal variations. For example, PM~2.5~ concentration has two peaks in summer and winter months. Sulfate tends to be more abundant in the air in the summer whereas nitrate concentration primarily peaks during cold seasons.
+
+```{r timeseries, echo=FALSE, results='hide',fig.keep='all', message=FALSE}
+df <- training
+pm_time <- melt(df)
+#select a subset of the variable to show
+pm_time.sub <- subset(pm_time, subset = variable %in% c("PM2.5","Nitrate","Sulfate.","Iron."))
+pm_time.sub$Date <- as.POSIXct(pm_time.sub$Date)
+qplot(Date, value, data = pm_time.sub,geom="line",group=variable, color=variable)+scale_x_datetime(breaks = date_breaks("3 month"),labels=date_format("%Y %b"))+theme(axis.text.x=element_text(angle=30,vjust=1.0,hjust=1.0))+labs(x="Date",y="microgram/m3")+ggtitle("Time series of PM2.5 and select components") + theme(plot.title = element_text(hjust = 0.5))
+```
+
+Further investigation of the distribution of these variables in the training dataset suggest that many elements are present in trace level and frequently reported as zero because the concentrations are below detection limit. The concentration of Other major components as well as PM~2.5~ appear to be following lognormal-like distribution.
+
+```{r hist,echo=FALSE,results='hide',fig.keep='all', message=FALSE}
+#create histograms & boxpolots; ggsave saves the plot as a pdf file
+pm_long <- reshape2::melt(training)
+
+ggplot(pm_long, aes(value)) + facet_wrap(~variable, scales = 'free_x') +
+  geom_histogram(bins = 10)
+
+ggsave("hist_plots.pdf", plot = last_plot(), device = NULL, path = NULL,
+  scale = 1, width = NA, height = NA, units = c("in", "cm", "mm"),
+  dpi = 800, limitsize = TRUE)
+```
+
+## Subsetting
+
+Using subsetting, we would like to find out the best-subset. Forward, backward and hybrid methods were explored in this analysis.
+
+For example, the following graphs visualize the results from the forward subsetting method.
+
+```{r subsetting_forward, echo=FALSE}
+#Using forward method
+print("Example of subsetting: Forward subsetting")
+reg.forward <- regsubsets(PM2.5~., training.clean, method = "forward", nvmax = 37)
+plot(reg.forward, scale = "adjr2", main = "Adjusted R^2")
+plot(reg.forward, scale = "bic", main = "BIC")
+plot(reg.forward, scale = "Cp", main = "Cp")
+reg.forward.sum <- summary(reg.forward)
+```
+
+```{r backward, echo=FALSE, include=FALSE}
+#Using backward method
+#As the plots are similar to the ones generated by the forward approach, they are not shown in the report. We will make a comparison at the end of this section.
+reg.backward <- regsubsets(PM2.5~., training.clean, method = "backward", nvmax = 37)
+plot(reg.backward, scale = "adjr2", main = "Adjusted R^2")
+plot(reg.backward, scale = "bic", main = "BIC")
+plot(reg.backward, scale = "Cp", main = "Cp")
+reg.backward.sum <- summary(reg.backward)
+```
+
+```{r hybrid, echo=FALSE, include=FALSE}
+##Using the hybrid method
+#As the plots are similar to the ones generated by the forward approach, they are not shown in the report. We will make a comparison at the end of this section.
+reg.seqrep <- regsubsets(PM2.5~., training.clean, method = "seqrep", nvmax = 37)
+plot(reg.seqrep, scale = "adjr2", main = "Adjusted R^2")
+plot(reg.seqrep, scale = "bic", main = "BIC")
+plot(reg.seqrep, scale = "Cp", main = "Cp")
+reg.hybrid.sum <- summary(reg.seqrep)
+
+```
+
+Backward and hybrid method generate similar outputs and were therefore not shown in this report. The following table compares the number of variables in the best-fit model by method and criteria metrics. General consistency among the methods were observed and the major disagreement on the number of variables in the best-fit model is on the criteria metrics. For example, using BIC as the criterion, the best-fit mode reduced the total number of predictors to 8 or 9.
+
+```{r comp_subsetting, echo=FALSE}
+Cp <- c(which.min(reg.forward.sum$cp), which.min(reg.backward.sum$cp), which.min(reg.hybrid.sum$cp))
+BIC <- c(which.min(reg.forward.sum$bic), which.min(reg.backward.sum$bic), which.min(reg.hybrid.sum$bic))
+adjr2 <- c(which.max(reg.forward.sum$adjr2), which.max(reg.backward.sum$adjr2), which.max(reg.hybrid.sum$adjr2))
+
+res.subsetting <- data.frame(c("forward","backward","hybrid"),Cp, BIC, adjr2)
+colnames(res.subsetting)[1] <- "method"
+
+print("Comparison of the number of variables in the best-fit model")
+pander(res.subsetting)
+```
+
+Due to the complexity of evaluating every possible "best-fit" model suggested by our analysis. We chose the hybrid model with 8 variables as an example and further evaluated its performance. This model suggests that aluminum, calcium, vanadium, zirconium, nitrate, OC, EC and sulfate as the primary predictors^[4]^.
+
+```{r subsetting_eval, echo=FALSE}
+#since there is no predict function for regsubsets object, we need to create one
+predict.regsubsets = function(object,newdata,id){
+  form = as.formula(object$call[[2]])
+  mat = model.matrix(form, newdata)
+  coefi = coef(object, id=id)
+  mat[,names(coefi)] %*% coefi
+}
+```
+
+
+## Multivariate linear regression
+
+We first built a simple linear model using the lm function.
+
+```{r linear model, echo=FALSE}
+linear <- lm(PM2.5~. ,data = training.clean)
+summary(linear)
+plot(linear)
+```
+
+A first glimpse at the results indicate that the results of the linear regression is far from ideal.  
+1) All the coefficients have to be positive in order to make sense practically because the independent variables are components of PM2.5 and represent concentrations in the air.  
+2) The large standard errors associated with the estimates of coefficients are present.  
+3) A big portion of the p-values are fairly large, suggesting that the corresponding coefficients are NOT statistically distinguishable from 0.  
+  
+The variance inflation factor (VIF) is equal to `r VIF(linear)`, which is much greater than 2 (widely accepted level for lm regression), suggesting strong impact of the multicollinearity in this dataset (recall that no multicollinearity is one of the assumptions for the linear model). 
+
+```{r corplot, echo=FALSE}
+#focus on the intercorrelations among the predictors by removing the last column (PM2.5 concentration)
+#training.predictor <- training.clean[,1:37]
+corrplot(cor(training.predictor),tl.cex = 0.5, title="Multicolinearity in the training dataset", mar=c(0,0,2,0), method="circle")
+```
+
+It is not surprising that many components are inter-correlated. For example, silicon and calcium has a correlation of `r cor(training$Silicon.,training$Calcium.)`. The practical explanation is that both silicon and calcium are "crustal elements", meaning that they both predominantly come into PM~2.5~ from soil/dust that is resuspended by natural and human activities. These correlations are very indicative in the environmental science research but could dramatically harm the linear regression model we are investigating here.
+
+## Principal Component Regression
+
+With cross-validation, principal component regression analysis identified that 5 variables were able to explain over 80% of the variations of PM~2.5~. Increasing the number of variables only marginally increase the R^2^ and reduce the mean squared prediction error (MSEP). Therefore, with the purpose of dimension reduction, regression model with 5 variable was selected for the further evaluation in this project.
+```{r, include=FALSE}
+loadPkg("pls")
+```
+
+```{r PCA using pls, echo=FALSE}
+#PM2.5 values from test set
+y_test <- testing.clean[,38]
+
+#PCA model from training set
+pcr_model <- pcr(PM2.5~., data=training.clean, scale = TRUE, validation = "CV")
+
+#Predict y values from test set
+#pcr_pred <- predict(pcr_model, testing.predictor, ncomp = 5)
+
+#Measured vs. Predicted in Training set
+#predplot(pcr_model)
+
+#Plot of coefficient values for PCA Regression
+#coefplot(pcr_model)
+
+#Plot of MSEP by PCA components
+validationplot(pcr_model, val.type = "MSEP")
+
+#Plot of R2 by PCA components
+validationplot(pcr_model, val.type = "R2")
+
+#Calculate mean of differences between y and y_hat
+#mean((pcr_pred - y_test)^2)
+
+#Scatter of testing predicted vs actuals
+#plot(pcr_pred,y_test,type ="p")
+
+#extract the coefficients of pcr model with 5 components
+print("Coefficients of pcr")
+pcr_model$coefficients[,,5]
+```
+
+## Ridge regression
+
+```{r setup ridge lasso, echo=FALSE}
+#create design matrice for the regression
+x.training <- model.matrix(PM2.5~.,training.clean)[,-1]
+y.training <- training.clean$PM2.5
+
+x.testing <- model.matrix(PM2.5~. ,testing.clean)[,-1]
+y.testing <- testing.clean$PM2.5
+```
+
+```{r ridge, echo=FALSE}
+grid=10^seq(10,-2,length=100)
+#use cross-validation to determine the lambda that yields the minimum mean cross-validated error (cvm)
+set.seed(1)
+cv.out.ridge = cv.glmnet(x.training, y.training, alpha=0)
+plot(cv.out.ridge)
+bestlam.ridge=cv.out.ridge$lambda.min
+#bestlam.ridge
+
+ridge.mod=glmnet(x.training,y.training,alpha=0,lambda=grid)
+#generate predicted values based on the model
+ridge.pred=predict(ridge.mod,s=bestlam.ridge,newx=x.testing)
+#mean((ridge.pred-y.testing)^2)
+ridge.coeff = predict(ridge.mod,type="coefficients",s=bestlam.ridge)
+ridge.coeff
+```
+
+By examining the coefficients of the ridge regression model, it appears that many variables have negative and/or significantly large coefficients. As discussed in the previous section, in the practical research, it is not preferable to have negative values. In addition, large coefficients indicate the model adds considerable amount of weight to the corresponding variables, which may be alarming in some cases (especially for trace elements).
+
+## Lasso regression
+
+As we have probably seen that many components are inter-correlated, to some extent at least. This may prevent the effective modeling using multivariate regression. Lasso regression is able to aggressively reduce dimensionality by pushing many of the coefficients to zero which may be helpful in the presence of variables that are frequently zero or close to zero.
+
+```{r lasso, echo=FALSE}
+set.seed(1)
+cv.out.lasso=cv.glmnet(x.training,y.training,alpha=1)
+plot(cv.out.lasso)
+bestlam.lasso=cv.out.lasso$lambda.min
+#bestlam.lasso
+
+lasso.mod=glmnet(x.training,y.training,alpha=1,lambda=grid)
+#generate predicted values based on the model
+lasso.pred=predict(lasso.mod,s=bestlam.lasso,newx=x.testing)
+#mean((lasso.pred-y.testing)^2)
+#out.lasso=glmnet(x.training,y.training,alpha=1,lambda=grid)
+lasso.coef=predict(lasso.mod,type="coefficients",s=bestlam.lasso)
+lasso.coef
+```
+
+The results from the Lasso regression suggest that only 9 (out of 37) variables (components) end up having non-zero coefficients. 
+
+
+# Results and discussion
+
+```{r model comparison, echo=FALSE}
+#calculate the predicted values using the testing set based on the models built in the previous section
+
+#subsetting: hybrid;8 variables
+pred.hybrid <- predict.regsubsets(reg.seqrep, testing.clean, id=8)
+RMSE.subsetting <- sqrt(mean((pred.hybrid-y.testing)^2))
+rsqr.hybrid <- cor(pred.hybrid,y.testing)^2
+qqnorm((pred.hybrid-y.testing)/sd(pred.hybrid-y.testing), ylab = "Standardized residual", main="Subsetting (hybrid, 8 variables)")#standardized residual
+qqline((pred.hybrid-y.testing)/sd(pred.hybrid-y.testing))
+
+
+#lm
+pred.linear <- predict(linear, testing.predictor)
+RMSE.lm <- sqrt(mean((pred.linear-y.testing)^2))
+rsqr.linear <- cor(pred.linear,y.testing)^2
+qqnorm((pred.linear-y.testing)/sd(pred.linear-y.testing),ylab = "Standardized residual", main="Multivariate linear model")
+qqline((pred.linear-y.testing)/sd(pred.linear-y.testing))
+
+#pcr
+pred.pcr <- predict(pcr_model, testing.predictor, ncomp=5)
+RMSE.pcr <- sqrt(mean((pred.pcr-y.testing)^2))
+rsqr.pcr <- cor(pred.pcr,y.testing)^2
+qqnorm((pred.pcr-y.testing)/sd(pred.pcr-y.testing),ylab = "Standardized residual", main="Principal component regression")
+qqline((pred.pcr-y.testing)/sd(pred.pcr-y.testing))
+
+#ridge
+RMSE.ridge <- sqrt(mean((ridge.pred-y.testing)^2))
+rsqr.ridge <- cor(ridge.pred,y.testing)^2
+qqnorm((ridge.pred-y.testing)/sd(ridge.pred-y.testing),ylab = "Standardized residual", main="Ridge regression")
+qqline((ridge.pred-y.testing)/sd(ridge.pred-y.testing))
+
+#lasso
+RMSE.lasso <- sqrt(mean((lasso.pred-y.testing)^2))
+rsqr.lasso <- cor(lasso.pred,y.testing)^2
+qqnorm((lasso.pred-y.testing)/sd(lasso.pred-y.testing), ylab = "Standardized residual", main="Lasso regression")
+qqline((lasso.pred-y.testing)/sd(lasso.pred-y.testing))
+```
+```{r compare, echo = FALSE}
+RMSE <- data.frame(c("lasso", "ridge", "subsetting", "lm", "pcr"), c(RMSE.lasso, RMSE.ridge, RMSE.subsetting,RMSE.lm,RMSE.pcr), c(rsqr.lasso,rsqr.ridge,rsqr.hybrid,rsqr.linear,rsqr.pcr))
+colnames(RMSE) <- c("model","RMSE","R^2")
+
+pander(RMSE)
+
+lasso.coef
+```
+
+Based on the results, Lasso regression yielded the best fit and prediction. Prediction using principal component regression model exhibits the largest RMSE. In general, all five evaluated models showed decent to good capability of making predictions using the testing dataset. A close took at the coefficients generated by the Lasso regression lead to the finding that components that account for large portion of the PM~2.5~ mass as well as the ones commonly correlated with other components were retained. For example, sulfate, nitrate, OC, EC, ammonium are the species accounting about three quarters of the PM~2.5~ mass. Chlorine is correlated to with several sea salt elements (sodium, magnesium etc.) and calcium is correlated to mineral species such as silicon, iron etc. To some extent, we can even identify some major sources of PM~2.5~ from this shorter list of variables.
+
+Considering the additional benefit of dimension reduction by Lasso regression (9 variables in the final model), it is still the optimal choice. By examining the coefficients of Lasso regression, we see that manganese and zirconium have large coefficients, this might be due to their concentration that are close to zero which causes larger uncertainties. 
+
+
+
+# Reference
+1. United States Environmental Protection Agency, Managing Air Quality - Ambient Air Monitoirng, Accessed Dec 4th 2017 at https://www.epa.gov/air-quality-management-process/managing-air-quality-ambient-air-monitoring
+2. ] Chow, J.C., Lowenthal, D. H., Chen, L.-W. A., Wang, X., Watson, J. G. (2015) Mass reconstruction methods for PM2.5: a review. Air Qual Atmos Health 8: 243-63
+3. United States Environmental Protection Agency, Pre-Generated Data Files, Accessed Nov 10 2017 at https://aqs.epa.gov/aqsweb/airdata/download_files.html
+4. The scripts of creating a predict function or regsubsets object was generated by referencing to https://suclass.stanford.edu/asset-v1:Statistics+Stats216+Winter2017+type@asset+block/ch6.html
